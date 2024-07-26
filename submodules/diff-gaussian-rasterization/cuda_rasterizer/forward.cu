@@ -9,6 +9,8 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
+#include <algorithm>
+#include <cmath>
 #include "forward.h"
 #include "auxiliary.h"
 #include <cooperative_groups.h>
@@ -896,6 +898,299 @@ void FORWARD::mw_score_gaussian(
 		max_weight_score);
 }
 
+
+// Added NEW ssim calculation function
+
+template <uint32_t CHANNELS>
+__device__ float calculate_ssim(const float* gt_color, const float* prim_color) {
+    const float C1 = 0.01f * 0.01f;
+    const float C2 = 0.03f * 0.03f;
+
+    // Calculate mean
+    float mu_gt = 0.0f;
+    float mu_prim = 0.0f;
+    for (uint32_t ch = 0; ch < CHANNELS; ch++) {
+        mu_gt += gt_color[ch];
+        mu_prim += prim_color[ch];
+    }
+    mu_gt /= CHANNELS;
+    mu_prim /= CHANNELS;
+
+    // Calculate variance and covariance
+    float sigma_gt_sq = 0.0f;
+    float sigma_prim_sq = 0.0f;
+    float sigma_gt_prim = 0.0f;
+    for (uint32_t ch = 0; ch < CHANNELS; ch++) {
+        sigma_gt_sq += (gt_color[ch] - mu_gt) * (gt_color[ch] - mu_gt);
+        sigma_prim_sq += (prim_color[ch] - mu_prim) * (prim_color[ch] - mu_prim);
+        sigma_gt_prim += (gt_color[ch] - mu_gt) * (prim_color[ch] - mu_prim);
+    }
+    sigma_gt_sq /= CHANNELS;
+    sigma_prim_sq /= CHANNELS;
+    sigma_gt_prim /= CHANNELS;
+
+    // Calculate SSIM
+    float ssim_numerator = (2.0f * mu_gt * mu_prim + C1) * (2.0f * sigma_gt_prim + C2);
+    float ssim_denominator = (mu_gt * mu_gt + mu_prim * mu_prim + C1) * (sigma_gt_sq + sigma_prim_sq + C2);
+    return ssim_numerator / ssim_denominator;
+}
+
+template <uint32_t CHANNELS>
+__device__ float calculate_ms_ssim(const float* gt_color, const float* prim_color, int height, int width) {
+    const int num_scales = 2; // Number of scales in the MS-SSIM calculation
+    const float weights[num_scales] = {0.0448f, 0.2856f}; // Weight factors for each scale
+    const float sigma = 1.5f; // Sigma value for Gaussian filter
+
+    // Temporary arrays for intermediate results
+    float mu_x[num_scales], mu_y[num_scales];
+    float sigma_x_sq[num_scales], sigma_y_sq[num_scales], sigma_xy[num_scales];
+
+    // Initialize arrays
+    for (int s = 0; s < num_scales; s++) {
+        mu_x[s] = 0.0f;
+        mu_y[s] = 0.0f;
+        sigma_x_sq[s] = 0.0f;
+        sigma_y_sq[s] = 0.0f;
+        sigma_xy[s] = 0.0f;
+    }
+
+    // Compute SSIM at each scale
+    float ms_ssim = 1.0f;
+    for (int s = 0; s < num_scales; s++) {
+        int current_height = height / (1 << s); // Calculate current height at scale s
+        int current_width = width / (1 << s); // Calculate current width at scale s
+
+        // Create Gaussian kernel for filtering
+        // Apply Gaussian filter to gt_color and prim_color (optional)
+
+        // Calculate SSIM at the current scale
+        float ssim = calculate_ssim<CHANNELS>(gt_color, prim_color);
+
+        // Update intermediate results for MS-SSIM
+        for (uint32_t ch = 0; ch < CHANNELS; ch++) {
+            mu_x[s] += gt_color[ch] / (current_height * current_width);
+            mu_y[s] += prim_color[ch] / (current_height * current_width);
+        }
+
+        ms_ssim *= max(ssim, 1e-10f); // Avoid potential numerical issues with very small SSIM values
+    }
+
+    // Combine SSIM values from different scales using weights
+    for (int s = 0; s < num_scales - 1; s++) {
+        ms_ssim *= powf(max(mu_x[s] * mu_y[s], 1e-10f), weights[s]);
+    }
+
+    return ms_ssim;
+}
+
+// Helper function to convert RGB to XYZ
+__device__ void rgb_to_xyz(const float* rgb, float* xyz) {
+    float r = rgb[0];
+    float g = rgb[1];
+    float b = rgb[2];
+
+    // Linearize sRGB values
+    r = r > 0.04045 ? powf((r + 0.055) / 1.055, 2.4) : r / 12.92;
+    g = g > 0.04045 ? powf((g + 0.055) / 1.055, 2.4) : g / 12.92;
+    b = b > 0.04045 ? powf((b + 0.055) / 1.055, 2.4) : b / 12.92;
+
+    // Convert to XYZ using the sRGB D65 conversion formula
+    xyz[0] = r * 0.4124564f + g * 0.3575761f + b * 0.1804375f;
+    xyz[1] = r * 0.2126729f + g * 0.7151522f + b * 0.0721750f;
+    xyz[2] = r * 0.0193339f + g * 0.1191920f + b * 0.9503041f;
+}
+
+
+//New color model conversion, calculation added
+// Helper function to clamp values
+__device__ float clamp(float val, float min_val, float max_val) {
+    return fminf(fmaxf(val, min_val), max_val);
+}
+
+// Helper function to convert xyz to lab
+__device__ void xyz_to_lab(const float* xyz, float* lab) {
+    // Reference white point for D65 illuminant
+    const float Xn =  95.047f; // D65
+    const float Yn = 100.000f;
+    const float Zn = 108.883f;
+
+    float x = xyz[0] / Xn;
+    float y = xyz[1] / Yn;
+    float z = xyz[2] / Zn;
+
+    // Apply the f(t) function
+    auto f = [](float t) -> float {
+        return t > 0.008856 ? powf(t, 1.0f / 3.0f) : (t * 903.3f + 16.0f) / 116.0f;
+    };
+
+    float fx = f(x);
+    float fy = f(y);
+    float fz = f(z);
+
+    lab[0] = 116.0f * fy - 16.0f; // L*
+    lab[1] = 500.0f * (fx - fy);   // a*
+    lab[2] = 200.0f * (fy - fz);    // b*
+}
+
+__device__ void rgb_to_lab(const float* rgb, float* lab) {
+    float xyz[3];
+    rgb_to_xyz(rgb, xyz);
+    xyz_to_lab(xyz, lab);
+}
+
+__device__ void rgb_to_hsv(const float* rgb, float* hsv) {
+    float r = rgb[0];
+    float g = rgb[1];
+    float b = rgb[2];
+
+    float cmax = fmaxf(r, fmaxf(g, b));
+    float cmin = fminf(r, fminf(g, b));
+    float delta = cmax - cmin;
+
+    // Hue calculation
+    float h = 0.0f;
+    if (delta > 0.0f) {
+        if (cmax == r) {
+            h = fmodf((g - b) / delta, 6.0f);
+        } else if (cmax == g) {
+            h = (b - r) / delta + 2.0f;
+        } else if (cmax == b) {
+            h = (r - g) / delta + 4.0f;
+        }
+        h *= 60.0f;
+        if (h < 0.0f) h += 360.0f;
+    }
+
+    // Saturation calculation
+    float s = (cmax > 0.0f) ? (delta / cmax) : 0.0f;
+
+    // Value calculation
+    float v = cmax;
+
+    hsv[0] = h;   // Hue
+    hsv[1] = s;   // Saturation
+    hsv[2] = v;   // Value
+}
+
+
+// Helper function to convert XYZ to LUV
+__device__ void xyz_to_luv(const float* xyz, float* luv) {
+    float X = xyz[0];
+    float Y = xyz[1];
+    float Z = xyz[2];
+
+    // Reference white point (D65)
+    const float Xr = 0.95047f;
+    const float Yr = 1.00000f;
+    const float Zr = 1.08883f;
+
+    // Calculate u' and v'
+    float u_prime = 4 * X / (X + 15 * Y + 3 * Z);
+    float v_prime = 9 * Y / (X + 15 * Y + 3 * Z);
+
+    float ur_prime = 4 * Xr / (Xr + 15 * Yr + 3 * Zr);
+    float vr_prime = 9 * Yr / (Xr + 15 * Yr + 3 * Zr);
+
+    // Calculate L*
+    float L = Y / Yr;
+    L = L > 0.008856 ? powf(L, 1.0 / 3.0) * 116.0f - 16.0f : 903.3f * L;
+
+    // Calculate u* and v*
+    float u = 13 * L * (u_prime - ur_prime);
+    float v = 13 * L * (v_prime - vr_prime);
+
+    // Store L*, u*, v*
+    luv[0] = L;
+    luv[1] = u;
+    luv[2] = v;
+}
+
+__device__ float ciede2000(const float* lab1, const float* lab2) {
+    // Constants
+    const float K_L = 1.0f;
+    const float K_C = 1.0f;
+    const float K_H = 1.0f;
+    
+    // LAB1 and LAB2
+    float L1 = lab1[0];
+    float a1 = lab1[1];
+    float b1 = lab1[2];
+    float L2 = lab2[0];
+    float a2 = lab2[1];
+    float b2 = lab2[2];
+
+    // Calculate differences
+    float dL = L2 - L1;
+    float dC = sqrtf(a2 * a2 + b2 * b2) - sqrtf(a1 * a1 + b1 * b1);
+    float dH = sqrtf((a2 - a1) * (a2 - a1) + (b2 - b1) * (b2 - b1) - dC * dC);
+
+    // Calculate average values
+    float L_mean = (L1 + L2) / 2.0f;
+    float C1 = sqrtf(a1 * a1 + b1 * b1);
+    float C2 = sqrtf(a2 * a2 + b2 * b2);
+    float C_mean = (C1 + C2) / 2.0f;
+    float h1 = atan2f(b1, a1);
+    float h2 = atan2f(b2, a2);
+    float H_mean = (h1 + h2) / 2.0f;
+
+    // Calculate weights
+    float T = 1.0f - 0.17f * cosf(H_mean - 30.0f) + 0.24f * cosf(2.0f * H_mean) + 0.32f * cosf(3.0f * H_mean + 6.0f) - 0.20f * cosf(4.0f * H_mean - 63.0f);
+    float SL = 1.0f + (0.015f * (L_mean - 50.0f) * (L_mean - 50.0f)) / sqrtf(20.0f + (L_mean - 50.0f) * (L_mean - 50.0f));
+    float SC = 1.0f + 0.045f * C_mean;
+    float SH = 1.0f + 0.015f * C_mean * T;
+    float delta_H_prime = h2 - h1;
+
+    // Ensure hue difference is in range [0, 360)
+    if (fabsf(delta_H_prime) > 180.0f) {
+        delta_H_prime = (delta_H_prime > 0.0f) ? delta_H_prime - 360.0f : delta_H_prime + 360.0f;
+    }
+
+    float delta_E = sqrtf(
+        (dL / (K_L * SL)) * (dL / (K_L * SL)) +
+        (dC / (K_C * SC)) * (dC / (K_C * SC)) +
+        (delta_H_prime / (K_H * SH)) * (delta_H_prime / (K_H * SH))
+    );
+
+    return delta_E;
+}
+
+__device__ float calculate_HSV_diff(const float* gt_color, const float* prim_color) {
+    float gt_hsv[3], prim_hsv[3];
+    rgb_to_hsv(gt_color, gt_hsv);
+    rgb_to_hsv(prim_color, prim_hsv);
+
+    // Calculate hue difference with wrap-around
+    float delta_H = fabsf(gt_hsv[0] - prim_hsv[0]);
+    delta_H = fminf(delta_H, 360.0f - delta_H); // Use fminf for clarity
+
+    // Calculate saturation and value differences
+    float delta_S = fabsf(gt_hsv[1] - prim_hsv[1]);
+    float delta_V = fabsf(gt_hsv[2] - prim_hsv[2]);
+
+    // Return total HSV difference
+    return delta_H + delta_S + delta_V;
+}
+
+__device__ float calculate_LAB_diff(const float* gt_color, const float* prim_color) {
+    float gt_lab[3], prim_lab[3];
+    rgb_to_lab(gt_color, gt_lab);
+    rgb_to_lab(prim_color, prim_lab);
+    return ciede2000(gt_lab, prim_lab);
+}
+
+// Function to calculate the absolute difference between LUV colors
+__device__ float calculate_LUV_diff(const float* gt_color, const float* prim_color) {
+    float gt_xyz[3], prim_xyz[3];
+    float gt_luv[3], prim_luv[3];
+    rgb_to_xyz(gt_color, gt_xyz);
+    rgb_to_xyz(prim_color, prim_xyz);
+    xyz_to_luv(gt_xyz, gt_luv);
+    xyz_to_luv(prim_xyz, prim_luv);
+    float diff = fabs(gt_luv[0] - prim_luv[0]) + fabs(gt_luv[1] - prim_luv[1]) + fabs(gt_luv[2] - prim_luv[2]);
+    return diff;
+}
+
+
 // Function IDs are defined using bitmasking. For example, `safeguard_gs_score_function=0x24`, which is SafeguardGS' choice, outputs `L1_color_error * alpha * transmittance`.
 // First 2 bytes:
 //   0x00. score = 1
@@ -930,6 +1225,9 @@ __device__ float compute_score(
 	float color_cos_sim = 0.0f;
 	float color_dist_err = 0.0f;
 	float score = 0.0f;
+    float ssim = 0.0f;
+    float abs_ms_ssim = 0.0f;
+    float color_diff = 0.0f;
 
 	switch (func_id & 0x0f)
 	{
@@ -978,6 +1276,24 @@ __device__ float compute_score(
 				color_dist_err += abs(gt_color[ch] - prim_color[ch]);
 			activated_color_dist_err = exp(-1.0f * c_dist_activation_coef * color_dist_err / C);
 			return score * activated_color_dist_err;
+        //Added function    
+        case 0x40:
+            float ssim = 1-calculate_ssim<C>(gt_color, prim_color);
+            return score * ssim;
+        case 0x50:
+            float abs_ms_ssim = abs(calculate_ms_ssim<C>(gt_color, prim_color, 256, 256));
+            return score * abs_ms_ssim;
+        //NEW COLOR MODEL BASED DIFF
+        case 0x60:
+			color_diff = calculate_LAB_diff(gt_color,prim_color);
+			//return score / (1.0f + logf(1.0f + color_diff));
+            return score * exp(-1.0f * color_diff);
+        case 0x70:
+			color_diff = calculate_LUV_diff(gt_color,prim_color);
+			return score * exp(-1.0f * color_diff);
+        case 0x80:
+            color_diff = calculate_HSV_diff(gt_color,prim_color);
+			return score * exp(-1.0f * color_diff);
 	}
 }
 

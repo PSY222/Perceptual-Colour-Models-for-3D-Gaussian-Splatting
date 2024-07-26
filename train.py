@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, huber_loss, PerceptualLoss,ms_ssim_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, ModelPool
@@ -93,8 +93,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + gaussians.addtional_loss(opt)
+        # Ll1 = l1_loss(image, gt_image)
+        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + gaussians.addtional_loss(opt)
+        huberLoss = l1_loss(image, gt_image)
+        # huberLoss = huber_loss(image, gt_image)
+        # msLoss = ms_ssim_loss(image, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * huberLoss + opt.lambda_dssim * (1-ssim(image, gt_image))
         loss.backward()
 
         iter_end.record()
@@ -110,7 +114,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.prune_before_densify(opt, iteration)
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), render_pkg)
+            #CHANGE THE VARIABLE WHEN YOU CHANGE THE LOSS   
+            training_report(tb_writer, iteration, huberLoss, loss, huber_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), render_pkg)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)

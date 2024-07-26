@@ -10,6 +10,9 @@
 #
 
 import torch
+from torch import nn
+import torchvision.models as models
+from torchvision.models import VGG16_Weights
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
@@ -61,4 +64,58 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean()
     else:
         return ssim_map.mean(1).mean(1).mean(1)
+
+# Added huber_loss 
+def huber_loss(network_output, gt, delta=1.0):
+    error = network_output - gt
+    is_small_error = torch.abs(error) <= delta
+    
+    squared_loss = torch.square(error) / 2
+    linear_loss = delta * (torch.abs(error) - delta / 2)
+    loss = torch.where(is_small_error, squared_loss, linear_loss)
+    
+    return torch.mean(loss)
+
+# Add MS-SSIM Loss : ms_ssim_loss
+def downsample(image):
+    return F.avg_pool2d(image, 2, stride=2)
+
+def ms_ssim_loss(img1, img2, window_size=11, levels=3, size_average=True):
+    mssim = []
+    weights = []
+    
+    for level in range(levels):
+        ssim_map = ssim(img1, img2, window_size=window_size, size_average=size_average)
+        mssim.append(ssim_map.mean().item())
+        weights.append(1.0 / (2.0 ** level))  # Weights decrease with each level
+        
+        img1 = downsample(img1)
+        img2 = downsample(img2)
+        
+        window_size = window_size // 2 if window_size > 1 else window_size
+
+    mssim = torch.tensor(mssim)
+    weights = torch.tensor(weights)
+    ms_ssim = (mssim * weights).sum()
+    
+    return ms_ssim
+
+
+# Added Perceptual Loss-> out of memory issue
+class PerceptualLoss(nn.Module):
+    def __init__(self, requires_grad=False):
+        super(PerceptualLoss, self).__init__()
+        vgg = models.vgg16(weights=VGG16_Weights.DEFAULT)
+        self.features = vgg.features[:23]  
+        
+        if not requires_grad:
+            for param in self.features.parameters():
+                param.requires_grad = False
+
+    def forward(self, output, target):
+        output_features = self.features(output)
+        target_features = self.features(target)
+        loss = torch.mean(torch.abs(output_features - target_features))
+        return loss
+
 

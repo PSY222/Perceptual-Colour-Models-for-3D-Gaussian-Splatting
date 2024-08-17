@@ -9,7 +9,11 @@ Download the link below to download the dataset.
 
 1. Clone this repository
 
-2. Set up the conda environment.
+```shell
+git clone https://github.com/PSY222/Perceptual-Colour-Models-for-3D-Gaussian-Splatting.git
+```
+
+3. Set up the conda environment.
 ```shell
 conda env create -f environment.yml
 conda activate ColourGS

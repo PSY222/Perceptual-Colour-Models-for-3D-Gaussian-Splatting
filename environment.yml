@@ -1,4 +1,4 @@
-name: SafeguardGS
+name: ColourGS
 channels:
   - pytorch
   - nvidia/label/cuda-11.6.2

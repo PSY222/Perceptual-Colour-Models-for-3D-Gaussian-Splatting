@@ -23,10 +23,10 @@ python train.py -s data/mipnerf360/bicycle -m output/mipnerf360/bicycle --prune_
 ## Acknowledgments
 Huge thanks to the authors of SafeguardGS who generously made their code available in public.
 
+[ Reference of SafeguardGS ]
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
     <h2 class="title">BibTeX</h2>
-    If you find this repository helpful, please cite this paper. </br>
     <pre><code>@misc{lee2024safeguardgs3dgaussianprimitive,
       title={SafeguardGS: 3D Gaussian Primitive Pruning While Avoiding Catastrophic Scene Destruction}, 
       author={Yongjae Lee and Zhaoliang Zhang and Deliang Fan},

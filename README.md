@@ -1,3 +1,7 @@
+# Perceptual Colour Models for 3D Gaussian Splatting 
+This repository is modified version of original SafeguardGS repository for the 'Perceptual Colour Models for 3D Gaussian Splatting'. Our implementation builds upon the open-source code from the SafeguardGS repository, which includes com- parative models such as LightGaussian, Mini-Splatting, and RadSplat. Drawing inspiration from Safe- guardGS’s straightforward yet effective method of in- corporating various score functions into a CUDA- differentiable 3DGS rasterizer, we extended this ap- proach by exploring novel score functions within the same framework. For our training, we utilized a single NVIDIA A100 80GB. To ensure a consistent compari- son, we adopted the same iteration parameters as those used in SafeguardGS. Additionally, other configuration settings, including the learning rate and densification method, were aligned with the original 3DGS method specifications. To ensure a fair comparison, we standard- ized the loss function across all models, using a hybrid of Huber loss and D-SSIM, for both original 3DGS and SafeguardGS.
+
+
 # SafeguardGS: 3D Gaussian Primitive Pruning While Avoiding Catastrophic Scene Destruction
 Yongjae Lee, Zhaoliang Zhang, Deliang Fan<br>
 | [arXiv](https://arxiv.org/abs/2405.17793) |<br>
